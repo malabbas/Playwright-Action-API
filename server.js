@@ -10,6 +10,20 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+const listRoutes = (appInstance) =>
+  appInstance._router.stack
+    .filter((layer) => layer.route && layer.route.path)
+    .map((layer) => ({
+      path: layer.route.path,
+      methods: Object.keys(layer.route.methods).map((method) =>
+        method.toUpperCase()
+      )
+    }));
+
+app.get("/routes", (_req, res) => {
+  res.json({ routes: listRoutes(app) });
+});
+
 app.post("/run", async (req, res) => {
   const { url } = req.body || {};
 
