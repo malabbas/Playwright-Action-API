@@ -104,7 +104,8 @@ const normalizeMode = (mode) => {
     "extract",
     "law_page",
     "relevant",
-    "match_window"
+    "match_window",
+    "search_window"
   ]);
   if (typeof mode !== "string") {
     return "min";
@@ -197,6 +198,166 @@ const normalizeArabicTextWithMap = (text) => {
   }
 
   return { normalizedText: chars.join("").trim(), indexMap };
+};
+
+const buildKeywordSet = (terms) => {
+  if (!Array.isArray(terms)) {
+    return [];
+  }
+  const englishStopwords = new Set([
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "been",
+    "but",
+    "by",
+    "for",
+    "from",
+    "has",
+    "have",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "their",
+    "then",
+    "there",
+    "these",
+    "this",
+    "to",
+    "was",
+    "were",
+    "with"
+  ]);
+  const arabicStopwords = new Set([
+    "و",
+    "في",
+    "على",
+    "من",
+    "الى",
+    "إلى",
+    "عن",
+    "مع",
+    "هو",
+    "هي",
+    "هذا",
+    "هذه",
+    "ذلك",
+    "تلك",
+    "هناك",
+    "هنا",
+    "الذي",
+    "التي",
+    "الذين",
+    "ما",
+    "لا",
+    "نعم",
+    "كان",
+    "تكون"
+  ]);
+  const keywords = new Set();
+
+  for (const term of terms) {
+    if (typeof term !== "string") {
+      continue;
+    }
+    const cleaned = term.replace(/\*\*/g, " ");
+    const tokens = cleaned.match(/[A-Za-z0-9]+|[\u0600-\u06FF]+/g) || [];
+    for (const token of tokens) {
+      if (!token) {
+        continue;
+      }
+      const normalizedToken = /[\u0600-\u06FF]/.test(token)
+        ? normalizeArabicText(token)
+        : token.toLowerCase();
+      if (!normalizedToken) {
+        continue;
+      }
+      if (englishStopwords.has(normalizedToken)) {
+        continue;
+      }
+      if (arabicStopwords.has(normalizedToken)) {
+        continue;
+      }
+      keywords.add(normalizedToken);
+    }
+  }
+
+  return Array.from(keywords);
+};
+
+const splitParagraphsWithOffsets = (text) => {
+  const paragraphs = [];
+  if (!text) {
+    return paragraphs;
+  }
+  const separatorRegex = /\n{2,}/g;
+  let start = 0;
+  let match;
+
+  while ((match = separatorRegex.exec(text)) !== null) {
+    const end = match.index;
+    const raw = text.slice(start, end);
+    const leading = raw.match(/^\s*/)?.[0].length ?? 0;
+    const trailing = raw.match(/\s*$/)?.[0].length ?? 0;
+    const trimmedStart = start + leading;
+    const trimmedEnd = end - trailing;
+    const paragraphText = raw.trim();
+    if (paragraphText) {
+      paragraphs.push({
+        text: paragraphText,
+        start: trimmedStart,
+        end: Math.max(trimmedStart, trimmedEnd)
+      });
+    }
+    start = end + match[0].length;
+  }
+
+  if (start <= text.length) {
+    const raw = text.slice(start);
+    const leading = raw.match(/^\s*/)?.[0].length ?? 0;
+    const trailing = raw.match(/\s*$/)?.[0].length ?? 0;
+    const trimmedStart = start + leading;
+    const trimmedEnd = text.length - trailing;
+    const paragraphText = raw.trim();
+    if (paragraphText) {
+      paragraphs.push({
+        text: paragraphText,
+        start: trimmedStart,
+        end: Math.max(trimmedStart, trimmedEnd)
+      });
+    }
+  }
+
+  return paragraphs;
+};
+
+const countOccurrences = (text, term) => {
+  if (!text || !term) {
+    return 0;
+  }
+  let count = 0;
+  let index = 0;
+  while (index < text.length) {
+    const found = text.indexOf(term, index);
+    if (found === -1) {
+      break;
+    }
+    count += 1;
+    index = found + term.length;
+  }
+  return count;
 };
 
 const mapNormalizedRangeToOriginal = (indexMap, textLength, start, end) => {
@@ -460,6 +621,9 @@ app.post("/fetch", async (req, res) => {
     maxChars = 12000,
     windowChars = 6000,
     maxMatches = 3,
+    startAfter,
+    terms,
+    maxWindows = 4,
     selectors = { title: "h1", content: "article, main" },
     extract = null,
     actions = [],
@@ -474,8 +638,16 @@ app.post("/fetch", async (req, res) => {
 
   const normalizedMode = normalizeMode(mode);
   const safeMaxChars = clampNumber(maxChars, 1, 200000, 12000);
-  const safeWindowChars = clampNumber(windowChars, 200, 200000, 6000);
+  const defaultWindowChars =
+    normalizedMode === "search_window" ? 5000 : 6000;
+  const safeWindowChars = clampNumber(
+    windowChars,
+    200,
+    200000,
+    defaultWindowChars
+  );
   const safeMaxMatches = clampNumber(maxMatches, 1, 25, 3);
+  const safeMaxWindows = clampNumber(maxWindows, 1, 25, 4);
   const actionSteps = Array.isArray(actions) ? actions.slice(0, 25) : [];
   const safeSelectors = normalizeSelectors(selectors);
 
@@ -643,6 +815,106 @@ app.post("/fetch", async (req, res) => {
         ...responseBase,
         relevantText,
         returnedChars: relevantText.length,
+        truncated,
+        matchCount
+      });
+    }
+
+    if (normalizedMode === "search_window") {
+      if (!Array.isArray(terms) || terms.length === 0) {
+        return res.status(400).json({ error: "Missing or invalid terms" });
+      }
+      const keywordList = buildKeywordSet(terms);
+      let workingText = contentText;
+      if (startAfter && typeof startAfter === "string") {
+        const startIndex = workingText.indexOf(startAfter);
+        if (startIndex !== -1) {
+          workingText = workingText.slice(startIndex);
+        }
+      }
+
+      const paragraphs = splitParagraphsWithOffsets(workingText);
+      if (keywordList.length === 0 || paragraphs.length === 0) {
+        const fallbackText = truncateText(workingText, safeMaxChars);
+        return res.json({
+          ...responseBase,
+          relevantText: fallbackText,
+          truncated: fallbackText.length < workingText.length,
+          matchCount: 0
+        });
+      }
+
+      const scored = paragraphs.map((paragraph) => {
+        const normalizedParagraph = normalizeArabicText(
+          paragraph.text.toLowerCase()
+        );
+        const score = keywordList.reduce(
+          (total, keyword) =>
+            total + countOccurrences(normalizedParagraph, keyword),
+          0
+        );
+        return { ...paragraph, score };
+      });
+
+      const sortedByScore = scored
+        .filter((entry) => entry.score > 0)
+        .sort((a, b) => b.score - a.score);
+      const selected = sortedByScore.slice(0, safeMaxWindows);
+      const matchCount = sortedByScore.reduce(
+        (total, entry) => total + entry.score,
+        0
+      );
+
+      if (selected.length === 0) {
+        const fallbackText = truncateText(workingText, safeMaxChars);
+        return res.json({
+          ...responseBase,
+          relevantText: fallbackText,
+          truncated: fallbackText.length < workingText.length,
+          matchCount
+        });
+      }
+
+      const halfWindow = Math.floor(safeWindowChars / 2);
+      const windows = selected.map((entry) => ({
+        start: Math.max(0, entry.start - halfWindow),
+        end: Math.min(workingText.length, entry.end + halfWindow)
+      }));
+      const mergedAll = mergeWindows(windows);
+      const mergedWindows = mergedAll.slice(0, safeMaxWindows);
+
+      let relevantText = "";
+      let truncated = false;
+
+      for (let i = 0; i < mergedWindows.length; i += 1) {
+        const window = mergedWindows[i];
+        const segment = workingText.slice(window.start, window.end).trim();
+        if (!segment) {
+          continue;
+        }
+        const separator = relevantText ? "\n\n" : "";
+        const remaining = safeMaxChars - relevantText.length;
+        if (remaining <= 0) {
+          truncated = true;
+          break;
+        }
+        const nextChunk = separator + segment;
+        if (nextChunk.length <= remaining) {
+          relevantText += nextChunk;
+        } else {
+          relevantText += nextChunk.slice(0, remaining);
+          truncated = true;
+          break;
+        }
+      }
+
+      if (mergedWindows.length < mergedAll.length) {
+        truncated = true;
+      }
+
+      return res.json({
+        ...responseBase,
+        relevantText,
         truncated,
         matchCount
       });
