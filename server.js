@@ -98,7 +98,14 @@ app.post("/run", async (req, res) => {
 });
 
 const normalizeMode = (mode) => {
-  const allowed = new Set(["full", "min", "extract", "law_page", "relevant"]);
+  const allowed = new Set([
+    "full",
+    "min",
+    "extract",
+    "law_page",
+    "relevant",
+    "match_window"
+  ]);
   if (typeof mode !== "string") {
     return "min";
   }
@@ -139,6 +146,89 @@ const truncateText = (text, maxChars) => {
     return text;
   }
   return text.slice(0, maxChars);
+};
+
+const normalizeArabicText = (text) => {
+  if (typeof text !== "string") {
+    return "";
+  }
+  return text
+    .replace(/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]/g, "")
+    .replace(/[\u0622\u0623\u0625\u0671]/g, "\u0627")
+    .replace(/\u0649/g, "\u064A")
+    .replace(/\u0629/g, "\u0647")
+    .replace(/\s+/g, " ")
+    .trim();
+};
+
+const normalizeArabicTextWithMap = (text) => {
+  if (typeof text !== "string") {
+    return { normalizedText: "", indexMap: [] };
+  }
+  const indexMap = [];
+  const chars = [];
+  let lastWasSpace = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]/.test(char)) {
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (lastWasSpace) {
+        continue;
+      }
+      lastWasSpace = true;
+      chars.push(" ");
+      indexMap.push(i);
+      continue;
+    }
+    lastWasSpace = false;
+    let normalizedChar = char;
+    if (/[\u0622\u0623\u0625\u0671]/.test(char)) {
+      normalizedChar = "\u0627";
+    } else if (char === "\u0649") {
+      normalizedChar = "\u064A";
+    } else if (char === "\u0629") {
+      normalizedChar = "\u0647";
+    }
+    chars.push(normalizedChar);
+    indexMap.push(i);
+  }
+
+  return { normalizedText: chars.join("").trim(), indexMap };
+};
+
+const mapNormalizedRangeToOriginal = (indexMap, textLength, start, end) => {
+  if (!indexMap.length || start >= end) {
+    return { start: 0, end: 0 };
+  }
+  const safeStart = Math.max(0, Math.min(start, indexMap.length - 1));
+  const safeEnd = Math.max(0, Math.min(end - 1, indexMap.length - 1));
+  const originalStart = indexMap[safeStart] ?? 0;
+  const originalEnd = (indexMap[safeEnd] ?? textLength - 1) + 1;
+  return {
+    start: Math.max(0, Math.min(originalStart, textLength)),
+    end: Math.max(0, Math.min(originalEnd, textLength))
+  };
+};
+
+const mergeWindows = (windows) => {
+  if (windows.length === 0) {
+    return [];
+  }
+  const sorted = windows.slice().sort((a, b) => a.start - b.start);
+  const merged = [sorted[0]];
+  for (let i = 1; i < sorted.length; i += 1) {
+    const current = sorted[i];
+    const last = merged[merged.length - 1];
+    if (current.start <= last.end) {
+      last.end = Math.max(last.end, current.end);
+    } else {
+      merged.push({ ...current });
+    }
+  }
+  return merged;
 };
 
 const runActions = async (page, steps, timeoutMs) => {
@@ -368,11 +458,14 @@ app.post("/fetch", async (req, res) => {
     url,
     mode = "min",
     maxChars = 12000,
+    windowChars = 6000,
+    maxMatches = 3,
     selectors = { title: "h1", content: "article, main" },
     extract = null,
     actions = [],
     timeoutMs = 45000,
-    question
+    question,
+    topic
   } = req.body || {};
 
   if (!url || typeof url !== "string") {
@@ -381,6 +474,8 @@ app.post("/fetch", async (req, res) => {
 
   const normalizedMode = normalizeMode(mode);
   const safeMaxChars = clampNumber(maxChars, 1, 200000, 12000);
+  const safeWindowChars = clampNumber(windowChars, 200, 200000, 6000);
+  const safeMaxMatches = clampNumber(maxMatches, 1, 25, 3);
   const actionSteps = Array.isArray(actions) ? actions.slice(0, 25) : [];
   const safeSelectors = normalizeSelectors(selectors);
 
@@ -463,6 +558,93 @@ app.post("/fetch", async (req, res) => {
         minText: relevantText,
         returnedChars: relevantText.length,
         truncated: relevantText.length < contentText.length
+      });
+    }
+
+    if (normalizedMode === "match_window") {
+      if (!topic || typeof topic !== "string") {
+        return res.status(400).json({ error: "Missing or invalid topic" });
+      }
+      const normalizedTopic = normalizeArabicText(topic);
+      const { normalizedText, indexMap } =
+        normalizeArabicTextWithMap(contentText);
+      const matchIndices = [];
+      if (normalizedTopic && normalizedText) {
+        let startIndex = 0;
+        while (startIndex < normalizedText.length) {
+          const foundIndex = normalizedText.indexOf(
+            normalizedTopic,
+            startIndex
+          );
+          if (foundIndex === -1) {
+            break;
+          }
+          matchIndices.push(foundIndex);
+          startIndex = foundIndex + normalizedTopic.length;
+        }
+      }
+      const matchCount = matchIndices.length;
+
+      if (matchCount === 0) {
+        const fallbackText = truncateText(contentText, safeMaxChars);
+        return res.json({
+          ...responseBase,
+          relevantText: fallbackText,
+          returnedChars: fallbackText.length,
+          truncated: fallbackText.length < contentText.length,
+          matchCount
+        });
+      }
+
+      const halfWindow = Math.floor(safeWindowChars / 2);
+      const windows = matchIndices.map((matchIndex) => ({
+        start: Math.max(0, matchIndex - halfWindow),
+        end: Math.min(normalizedText.length, matchIndex + halfWindow)
+      }));
+      const mergedAll = mergeWindows(windows);
+      const mergedWindows = mergedAll.slice(0, safeMaxMatches);
+
+      let relevantText = "";
+      let truncated = false;
+
+      for (let i = 0; i < mergedWindows.length; i += 1) {
+        const window = mergedWindows[i];
+        const { start, end } = mapNormalizedRangeToOriginal(
+          indexMap,
+          contentText.length,
+          window.start,
+          window.end
+        );
+        const segment = contentText.slice(start, end).trim();
+        if (!segment) {
+          continue;
+        }
+        const separator = relevantText ? "\n\n" : "";
+        const remaining = safeMaxChars - relevantText.length;
+        if (remaining <= 0) {
+          truncated = true;
+          break;
+        }
+        const nextChunk = separator + segment;
+        if (nextChunk.length <= remaining) {
+          relevantText += nextChunk;
+        } else {
+          relevantText += nextChunk.slice(0, remaining);
+          truncated = true;
+          break;
+        }
+      }
+
+      if (mergedWindows.length < mergedAll.length) {
+        truncated = true;
+      }
+
+      return res.json({
+        ...responseBase,
+        relevantText,
+        returnedChars: relevantText.length,
+        truncated,
+        matchCount
       });
     }
 
