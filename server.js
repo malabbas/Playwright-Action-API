@@ -139,16 +139,6 @@ const normalizeSelectors = (selectors) => {
   };
 };
 
-const truncateText = (text, maxChars) => {
-  if (!text) {
-    return "";
-  }
-  if (text.length <= maxChars) {
-    return text;
-  }
-  return text.slice(0, maxChars);
-};
-
 const normalizeArabicText = (text) => {
   if (typeof text !== "string") {
     return "";
@@ -614,6 +604,16 @@ const pickRelevantText = (contentText, questionText) => {
   return top.join("\n\n");
 };
 
+const logExtractedLengths = ({ contentText, fullText, lawText }) => {
+  console.log(
+    `[fetch] extracted lengths: content=${contentText.length}, full=${fullText.length}, law=${lawText.length}`
+  );
+};
+
+const logResponseLength = (label, text) => {
+  console.log(`[fetch] response length before res.json (${label}): ${text.length}`);
+};
+
 app.post("/fetch", async (req, res) => {
   const {
     url,
@@ -678,6 +678,7 @@ app.post("/fetch", async (req, res) => {
     const finalUrl = page.url();
     const { titleText, contentText, fullText, lawText } =
       await extractPageText(page, safeSelectors);
+    logExtractedLengths({ contentText, fullText, lawText });
 
     const responseBase = {
       ok: true,
@@ -688,48 +689,61 @@ app.post("/fetch", async (req, res) => {
 
     if (normalizedMode === "full") {
       const html = await page.content();
-      const text = truncateText(fullText, safeMaxChars);
+      const text = fullText;
+      const totalLength = fullText.length;
+      const truncated = totalLength > safeMaxChars;
+      logResponseLength("full.text", text);
       return res.json({
         ...responseBase,
         html,
         text,
         returnedChars: text.length,
-        truncated: text.length < fullText.length
+        totalLength,
+        truncated
       });
     }
 
     if (normalizedMode === "extract") {
       const extracted = await extractFields(page, extract);
-      const trimmedContent = truncateText(contentText, safeMaxChars);
+      const trimmedContent = contentText;
+      const totalLength = contentText.length;
+      const truncated = totalLength > safeMaxChars;
+      logResponseLength("extract.contentText", trimmedContent);
       return res.json({
         ...responseBase,
         extracted,
         contentText: trimmedContent,
         returnedChars: trimmedContent.length,
-        truncated: trimmedContent.length < contentText.length
+        totalLength,
+        truncated
       });
     }
 
     if (normalizedMode === "law_page") {
-      const lawMinText = truncateText(lawText, safeMaxChars);
+      const lawMinText = lawText;
+      const totalLength = lawText.length;
+      const truncated = totalLength > safeMaxChars;
+      logResponseLength("law_page.minText", lawMinText);
       return res.json({
         ...responseBase,
         minText: lawMinText,
         returnedChars: lawMinText.length,
-        truncated: lawMinText.length < lawText.length
+        totalLength,
+        truncated
       });
     }
 
     if (normalizedMode === "relevant" && question) {
-      const relevantText = truncateText(
-        pickRelevantText(contentText, question),
-        safeMaxChars
-      );
+      const relevantText = pickRelevantText(contentText, question);
+      const totalLength = relevantText.length;
+      const truncated = totalLength > safeMaxChars;
+      logResponseLength("relevant.minText", relevantText);
       return res.json({
         ...responseBase,
         minText: relevantText,
         returnedChars: relevantText.length,
-        truncated: relevantText.length < contentText.length
+        totalLength,
+        truncated
       });
     }
 
@@ -758,12 +772,16 @@ app.post("/fetch", async (req, res) => {
       const matchCount = matchIndices.length;
 
       if (matchCount === 0) {
-        const fallbackText = truncateText(contentText, safeMaxChars);
+        const fallbackText = contentText;
+        const totalLength = fallbackText.length;
+        const truncated = totalLength > safeMaxChars;
+        logResponseLength("match_window.relevantText.fallback", fallbackText);
         return res.json({
           ...responseBase,
           relevantText: fallbackText,
           returnedChars: fallbackText.length,
-          truncated: fallbackText.length < contentText.length,
+          totalLength,
+          truncated,
           matchCount
         });
       }
@@ -792,30 +810,25 @@ app.post("/fetch", async (req, res) => {
           continue;
         }
         const separator = relevantText ? "\n\n" : "";
-        const remaining = safeMaxChars - relevantText.length;
-        if (remaining <= 0) {
-          truncated = true;
-          break;
-        }
         const nextChunk = separator + segment;
-        if (nextChunk.length <= remaining) {
-          relevantText += nextChunk;
-        } else {
-          relevantText += nextChunk.slice(0, remaining);
-          truncated = true;
-          break;
-        }
+        relevantText += nextChunk;
       }
 
       if (mergedWindows.length < mergedAll.length) {
         truncated = true;
       }
 
+      if (relevantText.length > safeMaxChars) {
+        truncated = true;
+      }
+
+      logResponseLength("match_window.relevantText", relevantText);
       return res.json({
         ...responseBase,
         relevantText,
         returnedChars: relevantText.length,
         truncated,
+        totalLength: relevantText.length,
         matchCount
       });
     }
@@ -835,11 +848,15 @@ app.post("/fetch", async (req, res) => {
 
       const paragraphs = splitParagraphsWithOffsets(workingText);
       if (keywordList.length === 0 || paragraphs.length === 0) {
-        const fallbackText = truncateText(workingText, safeMaxChars);
+        const fallbackText = workingText;
+        const totalLength = fallbackText.length;
+        const truncated = totalLength > safeMaxChars;
+        logResponseLength("search_window.relevantText.fallback", fallbackText);
         return res.json({
           ...responseBase,
           relevantText: fallbackText,
-          truncated: fallbackText.length < workingText.length,
+          truncated,
+          totalLength,
           matchCount: 0
         });
       }
@@ -866,11 +883,15 @@ app.post("/fetch", async (req, res) => {
       );
 
       if (selected.length === 0) {
-        const fallbackText = truncateText(workingText, safeMaxChars);
+        const fallbackText = workingText;
+        const totalLength = fallbackText.length;
+        const truncated = totalLength > safeMaxChars;
+        logResponseLength("search_window.relevantText.fallback", fallbackText);
         return res.json({
           ...responseBase,
           relevantText: fallbackText,
-          truncated: fallbackText.length < workingText.length,
+          truncated,
+          totalLength,
           matchCount
         });
       }
@@ -893,39 +914,38 @@ app.post("/fetch", async (req, res) => {
           continue;
         }
         const separator = relevantText ? "\n\n" : "";
-        const remaining = safeMaxChars - relevantText.length;
-        if (remaining <= 0) {
-          truncated = true;
-          break;
-        }
         const nextChunk = separator + segment;
-        if (nextChunk.length <= remaining) {
-          relevantText += nextChunk;
-        } else {
-          relevantText += nextChunk.slice(0, remaining);
-          truncated = true;
-          break;
-        }
+        relevantText += nextChunk;
       }
 
       if (mergedWindows.length < mergedAll.length) {
         truncated = true;
       }
 
+      if (relevantText.length > safeMaxChars) {
+        truncated = true;
+      }
+
+      logResponseLength("search_window.relevantText", relevantText);
       return res.json({
         ...responseBase,
         relevantText,
         truncated,
+        totalLength: relevantText.length,
         matchCount
       });
     }
 
-    const minText = truncateText(contentText, safeMaxChars);
+    const minText = contentText;
+    const totalLength = minText.length;
+    const truncated = totalLength > safeMaxChars;
+    logResponseLength("min.minText", minText);
     return res.json({
       ...responseBase,
       minText,
       returnedChars: minText.length,
-      truncated: minText.length < contentText.length
+      totalLength,
+      truncated
     });
   } catch (error) {
     res.status(500).json({
