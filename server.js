@@ -122,9 +122,19 @@ app.post("/fetch", async (req, res) => {
       timeout: 30000
     });
 
+    const finalUrl = page.url();
     const title = await page.title();
+    const html = await page.content();
+    const text = await page.evaluate(() => document.body.innerText);
 
-    res.json({ ok: true, title });
+    res.json({
+      ok: true,
+      inputUrl: url,
+      finalUrl,
+      title,
+      html,
+      text
+    });
   } catch (error) {
     res.status(500).json({
       ok: false,
