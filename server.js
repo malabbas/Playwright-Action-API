@@ -1,10 +1,16 @@
 const express = require("express");
 const { chromium } = require("playwright");
 
+console.log("BOOT: server.js loaded");
+
 const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(express.json({ limit: "2mb" }));
+
+app.get("/", (_req, res) => {
+  res.type("text").send("SERVER_OK_v1");
+});
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
