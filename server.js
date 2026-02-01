@@ -72,6 +72,52 @@ app.post("/run", async (req, res) => {
   }
 });
 
+app.post("/fetch", async (req, res) => {
+  const { url } = req.body || {};
+
+  if (!url || typeof url !== "string") {
+    return res.status(400).json({ error: "Missing or invalid url" });
+  }
+
+  let browser;
+  let context;
+  let page;
+
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"]
+    });
+
+    context = await browser.newContext();
+    page = await context.newPage();
+
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: 30000
+    });
+
+    const title = await page.title();
+
+    res.json({ ok: true, title });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error.message || "Unexpected error"
+    });
+  } finally {
+    if (page) {
+      await page.close().catch(() => {});
+    }
+    if (context) {
+      await context.close().catch(() => {});
+    }
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+  }
+});
+
 app.listen(port, "0.0.0.0", () => {
   console.log(`Playwright service listening on port ${port}`);
 });
