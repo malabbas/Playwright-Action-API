@@ -618,7 +618,7 @@ app.post("/fetch", async (req, res) => {
   const {
     url,
     mode = "min",
-    maxChars = 12000,
+    maxChars = 200000,
     windowChars = 6000,
     maxMatches = 3,
     startAfter,
@@ -637,7 +637,7 @@ app.post("/fetch", async (req, res) => {
   }
 
   const normalizedMode = normalizeMode(mode);
-  const safeMaxChars = clampNumber(maxChars, 1, 200000, 12000);
+  const safeMaxChars = clampNumber(maxChars, 1, 300000, 200000);
   const defaultWindowChars =
     normalizedMode === "search_window" ? 5000 : 6000;
   const safeWindowChars = clampNumber(
