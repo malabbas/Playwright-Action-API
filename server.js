@@ -1,6 +1,11 @@
 const express = require("express");
 const { chromium } = require("playwright");
 
+const playwrightVersion =
+  process.env.PW_VERSION || require("playwright/package.json").version;
+
+console.log(`BOOT_IMAGE_CHECK: Playwright ${playwrightVersion}`);
+
 console.log("BOOT: server.js loaded");
 
 const app = express();
