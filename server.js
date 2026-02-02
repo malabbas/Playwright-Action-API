@@ -1,4 +1,6 @@
 const express = require("express");
+const fs = require("fs/promises");
+const path = require("path");
 const { chromium } = require("playwright");
 const { dispatchActions, actionHandlers } = require("./actions");
 
@@ -11,6 +13,42 @@ console.log("SUPPORTED_ACTIONS:", Object.keys(actionHandlers).sort());
 
 const app = express();
 const port = process.env.PORT || 3000;
+const VIDEO_DIR = "/tmp/videos";
+const VIDEO_RETENTION_MINUTES = Number.parseInt(
+  process.env.VIDEO_RETENTION_MINUTES || "60",
+  10
+);
+
+const cleanupOldVideos = async () => {
+  let entries;
+  try {
+    entries = await fs.readdir(VIDEO_DIR, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  const cutoff = Date.now() - VIDEO_RETENTION_MINUTES * 60 * 1000;
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isFile())
+      .map(async (entry) => {
+        const filePath = path.join(VIDEO_DIR, entry.name);
+        try {
+          const stats = await fs.stat(filePath);
+          if (stats.mtimeMs < cutoff) {
+            await fs.unlink(filePath);
+          }
+        } catch (error) {
+          if (error.code !== "ENOENT") {
+            console.warn(`Failed to cleanup video ${filePath}:`, error);
+          }
+        }
+      })
+  );
+};
 
 app.use(express.json({ limit: "2mb" }));
 
@@ -39,7 +77,7 @@ app.get("/debug/build", (_req, res) => {
 });
 
 app.post("/actions", async (req, res) => {
-  const { url, mode, actions } = req.body || {};
+  const { url, mode, actions, recordVideo } = req.body || {};
 
   if (!url || typeof url !== "string") {
     return res.status(400).json({ ok: false, error: "Missing or invalid url" });
@@ -60,6 +98,9 @@ app.post("/actions", async (req, res) => {
   let browser;
   let context;
   let page;
+  let video;
+  let videoPath;
+  let videoBase64;
 
   try {
     browser = await chromium.launch({
@@ -72,23 +113,57 @@ app.post("/actions", async (req, res) => {
       ]
     });
 
+    if (recordVideo === true) {
+      await fs.mkdir(VIDEO_DIR, { recursive: true });
+      await cleanupOldVideos();
+    }
+
     context = await browser.newContext({
-      viewport: { width: 1280, height: 720 }
+      viewport: { width: 1280, height: 720 },
+      ...(recordVideo === true
+        ? {
+            recordVideo: {
+              dir: VIDEO_DIR,
+              size: { width: 1280, height: 720 }
+            }
+          }
+        : {})
     });
 
     page = await context.newPage();
+    if (recordVideo === true) {
+      video = page.video();
+    }
     page.setDefaultNavigationTimeout(30000);
     page.setDefaultTimeout(30000);
 
     await page.goto(url, { waitUntil: "domcontentloaded" });
 
     const results = await dispatchActions(page, actions, { defaultUrl: url });
+    const finalUrl = page.url();
+
+    if (recordVideo === true && video) {
+      await page.close();
+      page = null;
+      await context.close();
+      context = null;
+      videoPath = await video.path();
+      videoBase64 = await fs.readFile(videoPath, { encoding: "base64" });
+    }
 
     return res.json({
       ok: true,
       data: {
         results,
-        finalUrl: page.url()
+        finalUrl,
+        ...(recordVideo === true
+          ? {
+              video: {
+                path: videoPath,
+                base64: videoBase64
+              }
+            }
+          : {})
       }
     });
   } catch (error) {
