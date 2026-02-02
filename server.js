@@ -1,12 +1,13 @@
 const express = require("express");
 const { chromium } = require("playwright");
-const { dispatchActions } = require("./actions");
+const { dispatchActions, actionHandlers } = require("./actions");
 
 const playwrightVersion =
   process.env.PW_VERSION || require("playwright/package.json").version;
 
 console.log(`BOOT_IMAGE_CHECK: Playwright ${playwrightVersion}`);
 console.log("BOOT: server.js loaded");
+console.log("SUPPORTED_ACTIONS:", Object.keys(actionHandlers).sort());
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -15,6 +16,26 @@ app.use(express.json({ limit: "2mb" }));
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
+});
+
+app.get("/debug/actions", (_req, res) => {
+  res.json({
+    ok: true,
+    supported_actions: Object.keys(actionHandlers).sort()
+  });
+});
+
+app.get("/debug/build", (_req, res) => {
+  res.json({
+    ok: true,
+    node: process.version,
+    cwd: process.cwd(),
+    server_file: __filename,
+    render: {
+      RENDER_GIT_COMMIT: process.env.RENDER_GIT_COMMIT || "",
+      RENDER_SERVICE_ID: process.env.RENDER_SERVICE_ID || ""
+    }
+  });
 });
 
 app.post("/actions", async (req, res) => {
@@ -61,7 +82,7 @@ app.post("/actions", async (req, res) => {
 
     await page.goto(url, { waitUntil: "domcontentloaded" });
 
-    const results = await dispatchActions(page, actions);
+    const results = await dispatchActions(page, actions, { defaultUrl: url });
 
     return res.json({
       ok: true,
