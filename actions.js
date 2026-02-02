@@ -14,7 +14,16 @@ const normalizeActionName = (step) => {
     return null;
   }
   const action = step.action || step.type;
-  return typeof action === "string" ? action.trim().toLowerCase() : null;
+  if (typeof action !== "string") {
+    return null;
+  }
+  const normalized = action.trim().toLowerCase();
+  const aliases = {
+    navigate: "goto",
+    go_to: "goto",
+    go: "goto"
+  };
+  return aliases[normalized] || normalized;
 };
 
 const getLocator = (page, step) => {
@@ -39,12 +48,18 @@ const actionHandlers = {
   // Add new actions by appending a new handler here.
   // Each handler receives (page, step) and can return a value to push into results.
   goto: async (page, step) => {
-    if (typeof step.url !== "string") {
+    const targetUrl =
+      typeof step.url === "string"
+        ? step.url
+        : typeof step.defaultUrl === "string"
+          ? step.defaultUrl
+          : null;
+    if (!targetUrl) {
       throw new Error("goto requires url");
     }
     const waitUntil = typeof step.waitUntil === "string" ? step.waitUntil : "load";
     const timeout = clampNumber(step.timeout, 0, 120000, 30000);
-    await page.goto(step.url, { waitUntil, timeout });
+    await page.goto(targetUrl, { waitUntil, timeout });
     return { action: "goto", url: page.url() };
   },
   wait: async (_page, step) => {
@@ -204,19 +219,32 @@ const actionHandlers = {
   }
 };
 
-const dispatchActions = async (page, steps) => {
+const dispatchActions = async (page, steps, options = {}) => {
   const results = [];
+  const defaultUrl =
+    options && typeof options.defaultUrl === "string" ? options.defaultUrl : null;
+  const supportedActions = Object.keys(actionHandlers).sort();
 
   for (const step of steps) {
-    const action = normalizeActionName(step);
+    const effectiveStep =
+      defaultUrl && step && typeof step === "object"
+        ? { ...step, defaultUrl }
+        : step;
+    const action = normalizeActionName(effectiveStep);
     if (!action) {
       throw new Error("Invalid action step");
     }
+    if (process.env.DEBUG_ACTIONS) {
+      console.log("ACTION_RUNTIME_RAW_STEP:", JSON.stringify(step));
+      console.log("ACTION_RUNTIME_NORMALIZED:", action);
+    }
     const handler = actionHandlers[action];
     if (!handler) {
-      throw new Error(`Unsupported action: ${action}`);
+      throw new Error(
+        `Unsupported action: ${action}. Supported: ${supportedActions.join(", ")}`
+      );
     }
-    const result = await handler(page, step);
+    const result = await handler(page, effectiveStep);
     if (typeof result !== "undefined") {
       results.push(result);
     }
@@ -225,4 +253,4 @@ const dispatchActions = async (page, steps) => {
   return results;
 };
 
-module.exports = { dispatchActions };
+module.exports = { dispatchActions, actionHandlers };
