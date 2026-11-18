@@ -1,6 +1,7 @@
 const DEFAULT_SCROLL_BY = 800;
 const DEFAULT_MAX_SCROLLS = 10;
 const DEFAULT_SCROLL_WAIT_MS = 150;
+const { RequestError } = require("./security");
 
 const clampNumber = (value, min, max, fallback) => {
   if (typeof value !== "number" || Number.isNaN(value)) {
@@ -62,9 +63,9 @@ const actionHandlers = {
     await page.goto(targetUrl, { waitUntil, timeout });
     return { action: "goto", url: page.url() };
   },
-  wait: async (_page, step) => {
+  wait: async (page, step) => {
     const ms = clampNumber(step.ms, 0, 120000, 0);
-    await new Promise((resolve) => setTimeout(resolve, ms));
+    await page.waitForTimeout(ms);
     return { action: "wait", ms };
   },
   scroll: async (page, step) => {
@@ -134,19 +135,11 @@ const actionHandlers = {
     await page.waitForSelector(step.selector, { timeout });
     return { action: "wait_for" };
   },
-  evaluate: async (page, step) => {
-    if (typeof step.script !== "string") {
-      throw new Error("evaluate requires script");
-    }
-    const result = await page.evaluate(step.script);
-    return { action: "evaluate", result };
-  },
   screenshot: async (page, step) => {
-    const path = typeof step.path === "string" ? step.path : null;
     const fullPage = Boolean(step.fullPage);
-    const buffer = await page.screenshot({ path: path || undefined, fullPage });
-    const data = path ? { path } : { base64: buffer.toString("base64") };
-    return { action: "screenshot", ...data };
+    const buffer = await page.screenshot({ fullPage, timeout: 15000 });
+    if (buffer.length > 5 * 1024 * 1024) throw new RequestError("Screenshot exceeds the 5 MiB output limit", 413);
+    return { action: "screenshot", base64: buffer.toString("base64") };
   },
   extract_text: async (page, step) => {
     if (typeof step.selector !== "string") {
@@ -234,11 +227,7 @@ const dispatchActions = async (page, steps, options = {}) => {
     if (!action) {
       throw new Error("Invalid action step");
     }
-    if (process.env.DEBUG_ACTIONS) {
-      console.log("ACTION_RUNTIME_RAW_STEP:", JSON.stringify(step));
-      console.log("ACTION_RUNTIME_NORMALIZED:", action);
-    }
-    const handler = actionHandlers[action];
+    const handler = Object.hasOwn(actionHandlers, action) ? actionHandlers[action] : null;
     if (!handler) {
       throw new Error(
         `Unsupported action: ${action}. Supported: ${supportedActions.join(", ")}`
@@ -247,10 +236,13 @@ const dispatchActions = async (page, steps, options = {}) => {
     const result = await handler(page, effectiveStep);
     if (typeof result !== "undefined") {
       results.push(result);
+      if (Buffer.byteLength(JSON.stringify(results)) > (options.maxOutputBytes || 10 * 1024 * 1024)) {
+        throw new RequestError("Results exceed the 10 MiB output limit", 413);
+      }
     }
   }
 
   return results;
 };
 
-module.exports = { dispatchActions, actionHandlers };
+module.exports = { dispatchActions, actionHandlers, normalizeActionName };

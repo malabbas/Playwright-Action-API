@@ -1,13 +1,18 @@
 {
-  "name": "playwright-docker-render",
+  "name": "playwright-action-api",
+  "private": true,
   "version": "1.0.0",
-  "description": "Dockerized Playwright (Chromium) service for Render",
+  "description": "Authenticated browser action API with Docker setup and bounded browser jobs",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "setup": "node scripts/setup.js",
+    "start": "node --env-file-if-exists=.env server.js",
+    "demo": "node --env-file-if-exists=.env scripts/demo.js",
+    "test": "node --test"
   },
+  "engines": { "node": ">=24" },
   "dependencies": {
-    "express": "^4.19.2",
-    "playwright": "^1.42.1"
+    "express": "^4.21.2",
+    "playwright": "1.58.1"
   }
 }

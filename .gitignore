@@ -1,1 +1,15 @@
 node_modules/
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.log
+playwright-report/
+test-results/
+videos/
+screenshots/
+storageState*.json
+.auth/
+.DS_Store

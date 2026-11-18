@@ -1,8 +1,15 @@
 services:
   - type: web
-    name: playwright-docker-render
+    name: playwright-action-api
     env: docker
     autoDeploy: true
+    healthCheckPath: /health
     envVars:
       - key: PORT
         value: 3000
+      - key: HOST
+        value: 0.0.0.0
+      - key: API_TOKEN
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: https://example.com

@@ -6,9 +6,12 @@ ENV NODE_ENV=production
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 COPY package.json package-lock.json* ./
-RUN npm install --omit=dev
+RUN npm ci --omit=dev && npm cache clean --force
 
 COPY . .
+
+ENV HOST=0.0.0.0
+USER pwuser
 
 EXPOSE 3000
 
