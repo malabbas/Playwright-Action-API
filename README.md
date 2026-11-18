@@ -19,8 +19,8 @@ The repository is the reusable project. It does not include a shared public API 
 Requirements: Node.js 24 or newer, npm, and the Chromium runtime dependencies for your platform. Chromium runs with its sandbox enabled. Linux hosts must permit the user namespaces needed by that sandbox. Docker Compose is an alternative if you prefer the packaged browser environment; its host still needs compatible sandbox support.
 
 ```bash
-git clone https://github.com/malabbas/playwright-docker-render.git
-cd playwright-docker-render
+git clone https://github.com/malabbas/Playwright-Action-API.git
+cd Playwright-Action-API
 npm ci
 npx playwright install --with-deps chromium
 npm run setup
@@ -109,6 +109,10 @@ The repository includes a Render blueprint, but a compatible container host must
 5. Stop or suspend the service through Render when you no longer need it. Local `docker compose stop` only controls the local container.
 
 Use HTTPS for a remote deployment. Keep the token in server-side callers or a secret manager; a static webpage cannot conceal a token embedded in its JavaScript. Publishing this repository does not require exposing a live automation service.
+
+## Azure Container Instances
+
+For an existing Azure Container Instance whose public IP changes, use [the Azure DNS guide](docs/AZURE-DNS.md). Its Cloud Shell helper previews a DNS label update and can apply it using the complete existing deployment while handling registry credentials privately. This keeps the deployed image and settings in place; it does not build a new image or enable HTTPS.
 
 ## Design and boundaries
 

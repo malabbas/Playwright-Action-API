@@ -16,3 +16,5 @@ videos
 screenshots
 storageState*.json
 .auth
+__pycache__
+*.pyc

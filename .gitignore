@@ -13,3 +13,5 @@ screenshots/
 storageState*.json
 .auth/
 .DS_Store
+__pycache__/
+*.py[cod]
